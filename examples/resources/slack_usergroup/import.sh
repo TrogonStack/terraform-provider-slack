@@ -1,0 +1,1 @@
+terraform import slack_usergroup.platform S0123456789
