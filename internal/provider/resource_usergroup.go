@@ -111,6 +111,7 @@ func (r *usergroupResource) Configure(_ context.Context, req resource.ConfigureR
 		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *apiClient, got: %T", req.ProviderData))
 		return
 	}
+	client.requireBotToken(&resp.Diagnostics, "slack_usergroup")
 	r.client = client
 }
 

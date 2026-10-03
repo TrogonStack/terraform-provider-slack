@@ -29,138 +29,123 @@ func (p *slackProvider) Metadata(_ context.Context, _ provider.MetadataRequest, 
 
 ### Schema
 
-A single attribute, `token`, Optional and Sensitive:
+Two attributes, `token` and `app_configuration_token`, both Optional and Sensitive. Each resource needs only one of them:
 
 ```go
-func (p *slackProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
-    resp.Schema = schema.Schema{
-        Attributes: map[string]schema.Attribute{
-            "token": schema.StringAttribute{
-                Optional:  true,
-                Sensitive: true,
-                MarkdownDescription: "Slack API token (bot or user token). Falls back to the " +
-                    "`SLACK_TOKEN` environment variable. Required OAuth scopes: " +
-                    "`channels:manage`, `channels:read`, `groups:write`, `groups:read`, " +
-                    "`usergroups:write`, `usergroups:read`.",
-            },
-        },
-    }
-}
+"token": schema.StringAttribute{
+    Optional:            true,
+    Sensitive:           true,
+    MarkdownDescription: "The Slack bot token, e.g. `xoxb-...`. Needed by `slack_conversation` and `slack_usergroup`.",
+},
+"app_configuration_token": schema.StringAttribute{
+    Optional:            true,
+    Sensitive:           true,
+    MarkdownDescription: "The Slack app configuration token. Needed by `slack_app`. It expires after 12 hours and the provider never rotates it.",
+},
 ```
 
-Unlike a provider configuring a self-hosted service, there is no `url`/`endpoint`/`host` attribute: the Slack Web API has one fixed base URL, and the `slack-go/slack` client defaults to it. The only thing this provider's config needs is which workspace/token to authenticate with.
+The provider-level `MarkdownDescription` carries the scope table and the rotation guidance: the pipeline calls `tooling.tokens.rotate` before `terraform plan`, because each rotation returns a new refresh token and a refresh during plan is never saved.
+
+Unlike a provider configuring a self-hosted service, there is no `url`/`endpoint`/`host` attribute: the Slack Web API has one fixed base URL (`slack.APIURL`).
 
 ### Provider Model
 
 ```go
 type slackProviderModel struct {
-    Token types.String `tfsdk:"token"`
+    Token                 types.String `tfsdk:"token"`
+    AppConfigurationToken types.String `tfsdk:"app_configuration_token"`
 }
 ```
 
 ### Configure
 
 ```go
-func (p *slackProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
-    if testAPIClient != nil {
-        resp.DataSourceData = testAPIClient
-        resp.ResourceData = testAPIClient
-        return
-    }
+client := &apiClient{}
 
-    var config slackProviderModel
-    resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
-    if resp.Diagnostics.HasError() {
-        return
-    }
+token := data.Token.ValueString()
+if token == "" {
+    token = os.Getenv("SLACK_TOKEN")
+}
+if token != "" {
+    client.slack = slack.New(token, slack.OptionHTTPClient(newRetryableClient()))
+}
 
-    token := config.Token.ValueString()
-    if token == "" {
-        token = os.Getenv("SLACK_TOKEN")
-    }
-    if token == "" {
-        resp.Diagnostics.AddError(
-            "Missing Slack Token",
-            "The provider requires a token, set via the `token` attribute or the SLACK_TOKEN environment variable.",
-        )
-        return
-    }
+appConfigurationToken := data.AppConfigurationToken.ValueString()
+if appConfigurationToken == "" {
+    appConfigurationToken = os.Getenv("SLACK_APP_CONFIGURATION_TOKEN")
+}
+if appConfigurationToken != "" {
+    client.apps = newAppsClient(appConfigurationToken, newRetryableClient(), slack.APIURL)
+}
 
-    client := &apiClient{
-        slack: slack.New(token, slack.OptionHTTPClient(newRetryableClient())),
-    }
-    resp.DataSourceData = client
-    resp.ResourceData = client
+if client.slack == nil && client.apps == nil {
+    resp.Diagnostics.AddError("Configuration Error", "token or app_configuration_token must be set, ...")
+    return
 }
 ```
 
-The `testAPIClient != nil` branch at the top is the package-level test bypass used throughout `references/guides/testing.md`'s `setupTestServer`: it lets acceptance tests point the whole provider at `fakeSlack` without going through environment variables or real credentials at all.
+A `testAPIClient != nil` branch runs before this and hands the injected client straight to resources (see `references/guides/testing.md`).
 
 ### Client Structure
 
 ```go
 type apiClient struct {
     slack *slack.Client
+    apps  *appsClient
 }
 ```
 
-Deliberately thin: one field, the `slack-go/slack` client itself. There is no custom HTTP wrapper type, no separate auth-token field stored alongside it (the token is already captured inside the `slack.Client`), and no additional per-environment configuration.
+`slack` serves `slack_conversation` and `slack_usergroup`. `apps` (`apps_client.go`) serves `slack_app`: it posts `apps.manifest.*` itself with the manifest as raw JSON, because `slack-go` decodes manifests into a fixed struct that drops fields it does not model, and its create response has no `app_id` or credentials. Its `ok: false` errors come back as `slack.SlackErrorResponse`, so `hasSlackError` works on both clients.
+
+Either field is nil when its token is unset. Each resource checks the one it needs in `Configure`:
+
+```go
+client.requireAppConfigurationToken(&resp.Diagnostics, "slack_app")
+r.client = client
+```
+
+`requireBotToken` is the same check for `slack_conversation` and `slack_usergroup`.
 
 ### Client Data Flow
 
 ```
-provider "slack" { token = "..." }
-          |
-          v
-slackProviderModel{ Token: "..." }
+provider "slack" { token = "...", app_configuration_token = "..." }
           |
           v
    Configure()
           |
           v
-   apiClient{ slack: *slack.Client }
+   apiClient{ slack: *slack.Client, apps: *appsClient }
           |
     (DataSourceData / ResourceData)
           |
           v
-  conversationResource.Configure()
-  usergroupResource.Configure()
+  appResource.Configure()          -> requireAppConfigurationToken
+  conversationResource.Configure() -> requireBotToken
+  usergroupResource.Configure()    -> requireBotToken
           |
           v
+  r.client.apps.createManifest(ctx, ...)
   r.client.slack.CreateConversationContext(ctx, ...)
-  r.client.slack.CreateUserGroupContext(ctx, ...)
 ```
 
 ### Resource and Data Source Registration
 
 ```go
-func (p *slackProvider) Resources(_ context.Context) []func() resource.Resource {
+func (p *slackProvider) Resources(ctx context.Context) []func() resource.Resource {
     return []func() resource.Resource{
-        newConversationResource,
-        newUsergroupResource,
+        newApp,
+        newConversation,
+        newUsergroup,
     }
-}
-
-func (p *slackProvider) DataSources(_ context.Context) []func() datasource.DataSource {
-    return []func() datasource.DataSource{}
 }
 ```
 
 `DataSources` returns an empty slice today; see `references/guides/data-source-lifecycle.md` for the illustrative shape a future data source would follow.
 
-### Constructor
-
-```go
-func New(version string) func() provider.Provider {
-    return func() provider.Provider {
-        return &slackProvider{version: version}
-    }
-}
-```
-
 ## Resource/Data Source Configure Pattern
 
-Every resource and data source receives the client through its own `Configure` method:
+Every resource receives the client through its own `Configure` method, and checks the credential it needs before keeping it:
 
 ```go
 func (r *conversationResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
@@ -173,6 +158,7 @@ func (r *conversationResource) Configure(_ context.Context, req resource.Configu
             fmt.Sprintf("Expected *apiClient, got: %T", req.ProviderData))
         return
     }
+    client.requireBotToken(&resp.Diagnostics, "slack_conversation")
     r.client = client
 }
 ```
@@ -181,11 +167,10 @@ func (r *conversationResource) Configure(_ context.Context, req resource.Configu
 
 ## Environment Variable Fallbacks
 
-| Config Attribute | Environment Variable | Attribute Type       |
-| ------------------- | ------------------------ | ----------------------- |
-| `token`           | `SLACK_TOKEN`         | Sensitive string, Optional |
-
-Unlike a provider with several independently-overridable settings, this provider has exactly one configurable value, and exactly one fallback path for it.
+| Config Attribute          | Environment Variable            | Attribute Type             |
+| ------------------------- | ------------------------------- | -------------------------- |
+| `token`                   | `SLACK_TOKEN`                   | Sensitive string, Optional |
+| `app_configuration_token` | `SLACK_APP_CONFIGURATION_TOKEN` | Sensitive string, Optional |
 
 ## Provider Server (main.go)
 

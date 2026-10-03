@@ -26,6 +26,16 @@ func requireLiveCredentials(t *testing.T) {
 	}
 }
 
+func requireLiveAppCredentials(t *testing.T) {
+	t.Helper()
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("set TF_ACC=1 to run live acceptance tests against a real Slack workspace")
+	}
+	if os.Getenv("SLACK_APP_CONFIGURATION_TOKEN") == "" {
+		t.Skip("set SLACK_APP_CONFIGURATION_TOKEN to run live acceptance tests that manage Slack apps")
+	}
+}
+
 func liveSlackClient() *slack.Client {
 	return slack.New(os.Getenv("SLACK_TOKEN"))
 }
@@ -131,6 +141,90 @@ resource "slack_usergroup" "test" {
 			},
 		},
 	})
+}
+
+func TestLive_App(t *testing.T) {
+	requireLiveAppCredentials(t)
+
+	client := newAppsClient(os.Getenv("SLACK_APP_CONFIGURATION_TOKEN"), newRetryableClient(), slack.APIURL)
+	name := "TF Live " + acctest.RandString(8)
+	var appId string
+
+	config := func(description string) string {
+		return liveProviderConfig + fmt.Sprintf(`
+resource "slack_app" "test" {
+  manifest = jsonencode({
+    display_information = {
+      name        = %q
+      description = %q
+    }
+    features = {
+      bot_user = {
+        display_name = "tf-live"
+      }
+    }
+    oauth_config = {
+      scopes = {
+        bot = ["channels:read"]
+      }
+    }
+  })
+}
+`, name, description)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy: func(_ *terraform.State) error {
+			return checkLiveAppDeleted(client, appId)
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: config("Created by the terraform-provider-slack live tests"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrSet("slack_app.test", "id"),
+					resource.TestCheckResourceAttrSet("slack_app.test", "client_id"),
+					resource.TestCheckResourceAttrSet("slack_app.test", "signing_secret"),
+					resource.TestCheckResourceAttrSet("slack_app.test", "oauth_authorize_url"),
+					func(s *terraform.State) error {
+						appId = s.RootModule().Resources["slack_app.test"].Primary.ID
+						return nil
+					},
+				),
+			},
+			{
+				ResourceName:      "slack_app.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+				ImportStateVerifyIgnore: []string{
+					"manifest",
+					"client_id",
+					"client_secret",
+					"signing_secret",
+					"verification_token",
+					"oauth_authorize_url",
+				},
+			},
+			{
+				Config: config("Updated by the terraform-provider-slack live tests"),
+				Check:  resource.TestCheckResourceAttrSet("slack_app.test", "client_secret"),
+			},
+		},
+	})
+}
+
+func checkLiveAppDeleted(client *appsClient, appId string) error {
+	if appId == "" {
+		return fmt.Errorf("no app ID was captured to verify destruction")
+	}
+	_, err := client.exportManifest(context.Background(), appId)
+	if hasSlackError(err, errAppNotFound, errInvalidAppID) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to export app while verifying destroy of %s: %w", appId, err)
+	}
+	return fmt.Errorf("expected app %s to be deleted, but it still exists", appId)
 }
 
 func checkLiveConversationArchived(client *slack.Client, conversationId string) error {
