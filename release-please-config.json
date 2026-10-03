@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "signoff": "SHT Bot <61149376+sht-bot@users.noreply.github.com>",
+  "packages": {
+    ".": {
+      "release-type": "go",
+      "package-name": "terraform-provider-slack",
+      "include-component-in-tag": false,
+      "include-v-in-tag": true,
+      "pull-request-title-pattern": "chore${scope}: release ${version}",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false
+    }
+  }
+}
