@@ -3,10 +3,12 @@ package provider
 import (
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/slack-go/slack"
 )
 
@@ -33,7 +35,10 @@ func setupTestServer(t *testing.T, handler http.Handler) *httptest.Server {
 // at the test server. Must be called before running terraform-plugin-testing steps.
 func setupTestClient(t *testing.T, server *httptest.Server) {
 	t.Helper()
-	testAPIClient = &apiClient{slack: slack.New(testToken, slack.OptionAPIURL(server.URL+"/"), slack.OptionHTTPClient(server.Client()))}
+	testAPIClient = &apiClient{
+		slack: slack.New(testToken, slack.OptionAPIURL(server.URL+"/"), slack.OptionHTTPClient(server.Client())),
+		apps:  newAppsClient(testConfigToken, server.Client(), server.URL+"/"),
+	}
 	t.Cleanup(func() { testAPIClient = nil })
 }
 
@@ -62,4 +67,25 @@ func TestConversationGoneErrorsAreNotFound(t *testing.T) {
 	if err == nil || !isNotFound(err) {
 		t.Fatalf("expected ArchiveConversation for a missing conversation to return a not-found error, got: %v", err)
 	}
+}
+
+func TestProviderRequiresACredential(t *testing.T) {
+	t.Setenv("SLACK_TOKEN", "")
+	t.Setenv("SLACK_APP_CONFIGURATION_TOKEN", "")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+provider "slack" {}
+
+resource "slack_conversation" "test" {
+  name = "eng-platform"
+}
+`,
+				ExpectError: regexp.MustCompile(`token or app_configuration_token must be set`),
+			},
+		},
+	})
 }

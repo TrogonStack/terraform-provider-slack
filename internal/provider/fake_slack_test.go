@@ -10,7 +10,10 @@ import (
 	"github.com/slack-go/slack"
 )
 
-const testToken = "xoxb-test"
+const (
+	testToken       = "xoxb-test"
+	testConfigToken = "xoxe-test"
+)
 
 const fakeCreatedAt slack.JSONTime = 1700000000
 
@@ -20,12 +23,15 @@ type fakeSlack struct {
 	nextGroupID   int
 	conversations map[string]*slack.Channel
 	usergroups    map[string]*slack.UserGroup
+	nextAppID     int
+	apps          map[string]map[string]any
 }
 
 func newFakeSlack() *fakeSlack {
 	return &fakeSlack{
 		conversations: make(map[string]*slack.Channel),
 		usergroups:    make(map[string]*slack.UserGroup),
+		apps:          make(map[string]map[string]any),
 	}
 }
 
@@ -34,7 +40,12 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeSlackError(w, "invalid_form_data")
 		return
 	}
-	if r.PostForm.Get("token") != testToken {
+	method := strings.TrimPrefix(r.URL.Path, "/")
+	wantToken := testToken
+	if strings.HasPrefix(method, "apps.manifest.") {
+		wantToken = testConfigToken
+	}
+	if r.PostForm.Get("token") != wantToken {
 		writeSlackError(w, "invalid_auth")
 		return
 	}
@@ -43,7 +54,53 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 
 	form := r.PostForm
-	switch strings.TrimPrefix(r.URL.Path, "/") {
+	switch method {
+	case "apps.manifest.validate":
+		if appID := form.Get("app_id"); appID != "" {
+			if _, ok := f.apps[appID]; !ok {
+				writeSlackError(w, "app_not_found")
+				return
+			}
+		}
+		if _, ok := parseFakeManifest(w, form.Get("manifest")); ok {
+			writeSlackOK(w, nil)
+		}
+	case "apps.manifest.create":
+		manifest, ok := parseFakeManifest(w, form.Get("manifest"))
+		if !ok {
+			return
+		}
+		f.nextAppID++
+		id := fmt.Sprintf("A%010d", f.nextAppID)
+		f.apps[id] = manifest
+		writeSlackOK(w, map[string]any{
+			"app_id": id,
+			"credentials": map[string]any{
+				"client_id":          "1111." + id,
+				"client_secret":      "secret-" + id,
+				"verification_token": "verify-" + id,
+				"signing_secret":     "signing-" + id,
+			},
+			"oauth_authorize_url": "https://slack.com/oauth/v2/authorize?client_id=1111." + id,
+		})
+	case "apps.manifest.update":
+		f.withApp(w, form, func(id string) {
+			manifest, ok := parseFakeManifest(w, form.Get("manifest"))
+			if !ok {
+				return
+			}
+			f.apps[id] = manifest
+			writeSlackOK(w, map[string]any{"app_id": id, "permissions_updated": false})
+		})
+	case "apps.manifest.export":
+		f.withApp(w, form, func(id string) {
+			writeSlackOK(w, map[string]any{"manifest": withSlackDefaults(f.apps[id])})
+		})
+	case "apps.manifest.delete":
+		f.withApp(w, form, func(id string) {
+			delete(f.apps, id)
+			writeSlackOK(w, nil)
+		})
 	case "conversations.create":
 		f.createConversation(w, form)
 	case "conversations.info":
@@ -231,6 +288,51 @@ func (f *fakeSlack) withUsergroup(w http.ResponseWriter, form map[string][]strin
 		return
 	}
 	fn(g)
+}
+
+func (f *fakeSlack) withApp(w http.ResponseWriter, form map[string][]string, fn func(string)) {
+	id := first(form["app_id"])
+	if _, ok := f.apps[id]; !ok {
+		writeSlackError(w, "app_not_found")
+		return
+	}
+	fn(id)
+}
+
+func parseFakeManifest(w http.ResponseWriter, raw string) (map[string]any, bool) {
+	var manifest map[string]any
+	if err := json.Unmarshal([]byte(raw), &manifest); err != nil {
+		writeSlackError(w, "invalid_manifest")
+		return nil, false
+	}
+	info, _ := manifest["display_information"].(map[string]any)
+	if name, _ := info["name"].(string); name == "" {
+		writeSlackJSON(w, map[string]any{
+			"ok":    false,
+			"error": "invalid_manifest",
+			"errors": []map[string]any{
+				{"message": "must have required property 'name'", "pointer": "/display_information"},
+			},
+		})
+		return nil, false
+	}
+	return manifest, true
+}
+
+// withSlackDefaults mimics apps.manifest.export, which returns keys the
+// configured manifest never set.
+func withSlackDefaults(manifest map[string]any) map[string]any {
+	exported := map[string]any{}
+	for k, v := range manifest {
+		exported[k] = v
+	}
+	settings, _ := exported["settings"].(map[string]any)
+	merged := map[string]any{"org_deploy_enabled": false, "socket_mode_enabled": false, "token_rotation_enabled": false}
+	for k, v := range settings {
+		merged[k] = v
+	}
+	exported["settings"] = merged
+	return exported
 }
 
 func first(values []string) string {

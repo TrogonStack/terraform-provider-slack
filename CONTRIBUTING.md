@@ -19,25 +19,26 @@ mise run docs    # regenerate docs/ from schema descriptions
 
 ## Testing
 
-Tests run against an in-memory fake of the Slack Web API and never reach Slack. `fakeSlack` in `fake_slack_test.go` is an `http.Handler` that answers the `conversations.*` and `usergroups.*` methods the provider calls, with Slack's own error codes, and rejects any request without the test token. `setupTestServer` serves it from an `httptest.Server`; `setupTestClient` points a real `slack.Client` at that server with `slack.OptionAPIURL` and injects it as `testAPIClient`, bypassing provider configuration entirely.
+Tests run against an in-memory fake of the Slack Web API and never reach Slack. `fakeSlack` in `fake_slack_test.go` is an `http.Handler` that answers the `apps.manifest.*`, `conversations.*` and `usergroups.*` methods the provider calls, with Slack's own error codes, and rejects any request without the matching test token. `setupTestServer` serves it from an `httptest.Server`; `setupTestClient` points a real `slack.Client` (with `slack.OptionAPIURL`) and an `appsClient` at that server and injects them as `testAPIClient`, bypassing provider configuration entirely.
 
 ```bash
 mise exec -- go test ./internal/provider/ -v -run TestAccConversation
 ```
 
-`live_test.go` runs the same resources against a real workspace. It skips unless both `TF_ACC` and `SLACK_TOKEN` are set, and it creates channels and user groups that are archived or disabled, not deleted, when the test ends. Use a sandbox workspace.
+`live_test.go` runs the same resources against a real workspace. Each test skips unless `TF_ACC` and the token it needs are set. The channel and user group tests need `SLACK_TOKEN`, and they leave channels and user groups archived or disabled, not deleted. The app test needs `SLACK_APP_CONFIGURATION_TOKEN`, and it deletes the app it creates. Use a sandbox workspace.
 
 ```bash
-SLACK_TOKEN=xoxb-... mise run test:live
+SLACK_TOKEN=xoxb-... SLACK_APP_CONFIGURATION_TOKEN=... mise run test:live
 ```
 
 ## Code layout
 
 All resources live in the flat `internal/provider/` package, named `resource_<name>.go` with tests alongside as `<file>_test.go`. New resources must be registered in the `Resources()` or `DataSources()` method in `provider.go`, or the provider will not expose them.
 
-Two things are easy to get wrong here:
+These things are easy to get wrong here:
 
 - Slack reports errors as HTTP 200 with `"ok": false`, which `slack-go` returns as a `slack.SlackErrorResponse`. Match error codes with the shared `hasSlackError(err, codes...)` and `isNotFound(err)` helpers, which unwrap with `errors.As`, rather than comparing `err.Error()` strings.
+- `slack-go` cannot round-trip an app manifest, so `appsClient` in `apps_client.go` calls `apps.manifest.*` with raw JSON. Its errors are still `slack.SlackErrorResponse`, and `describeSlackError` adds Slack's per-field manifest errors to a diagnostic.
 - Slack has no `usergroups.info`. `findUsergroup` lists with `include_disabled` and `include_users` and filters by ID, and a group with a non-zero `date_delete` counts as gone.
 
 On a not-found error, `Read` should call `resp.State.RemoveResource(ctx)` and return; `Delete` should return without an error.

@@ -2,13 +2,13 @@
 
 ## Overview
 
-This provider tests almost entirely against an in-memory fake of the Slack Web API, never against real Slack credentials in the normal test suite. A small, separate set of live acceptance tests exists for pre-release sanity checks, gated behind `TF_ACC` and a real `SLACK_TOKEN`.
+This provider tests almost entirely against an in-memory fake of the Slack Web API, never against real Slack credentials in the normal test suite. A small, separate set of live acceptance tests exists for pre-release sanity checks, gated behind `TF_ACC` and a real `SLACK_TOKEN` or `SLACK_APP_CONFIGURATION_TOKEN`.
 
 ## Test Infrastructure
 
 ### The Fake Slack
 
-`fake_slack_test.go` defines `fakeSlack`, an `http.Handler` that dispatches on request path, covering the `conversations.*` and `usergroups.*` endpoints both resources call:
+`fake_slack_test.go` defines `fakeSlack`, an `http.Handler` that dispatches on request path, covering the `apps.manifest.*`, `conversations.*` and `usergroups.*` endpoints the resources call:
 
 ```go
 type fakeSlack struct {
@@ -339,7 +339,9 @@ resource "slack_conversation" "live" {
 }
 ```
 
-`TestLive_Conversation` and `TestLive_Usergroup` are the two real live tests, using `liveSlackClient()` (a bare `slack.New(token)`, no fake) inside `checkLiveConversationArchived`/`checkLiveUsergroupDisabled` to confirm destroy archived or disabled the real object in the connected workspace. These never run in ordinary CI; they require a human to export `TF_ACC=1` and a valid `SLACK_TOKEN` for a real (ideally disposable) workspace.
+`TestLive_App` uses its own guard, `requireLiveAppCredentials`, which needs `SLACK_APP_CONFIGURATION_TOKEN` instead of `SLACK_TOKEN`, and checks destroy by exporting the deleted app through an `appsClient`.
+
+`TestLive_Conversation` and `TestLive_Usergroup` are the bot-token live tests, using `liveSlackClient()` (a bare `slack.New(token)`, no fake) inside `checkLiveConversationArchived`/`checkLiveUsergroupDisabled` to confirm destroy archived or disabled the real object in the connected workspace. These never run in ordinary CI; they require a human to export `TF_ACC=1` and a valid `SLACK_TOKEN` for a real (ideally disposable) workspace.
 
 ## Check Functions Reference
 
@@ -361,7 +363,7 @@ TF_ACC=1 go test ./internal/provider/... -run TestAcc  # Fake-backed acceptance 
 TF_ACC=1 SLACK_TOKEN=xoxb-... go test ./internal/provider/... -run TestLive  # Live tests against real Slack
 ```
 
-Both `TestAcc*` and `TestLive*` use `resource.Test`, which requires `TF_ACC=1` to actually run (otherwise it skips with a message); `TestLive*` additionally requires `SLACK_TOKEN` via `requireLiveCredentials`. Plain unit tests (`TestIsNotFound`, `TestHasSlackError`, `TestRetryPolicy_*`, `TestFakeRejectsMissingToken`, `TestConversationGoneErrorsAreNotFound`) run unconditionally with plain `go test`.
+Both `TestAcc*` and `TestLive*` use `resource.Test`, which requires `TF_ACC=1` to actually run (otherwise it skips with a message); `TestLive*` additionally requires `SLACK_TOKEN` via `requireLiveCredentials`. Plain unit tests (`TestIsNotFound`, `TestHasSlackError`, `TestRetryPolicy_*`, `TestFakeRejectsMissingToken`, `TestConversationGoneErrorsAreNotFound`, `TestManifestCovers`, `TestDescribeSlackErrorListsManifestErrors`, `TestAppsClientRejectsBotToken`) run unconditionally with plain `go test`.
 
 ## Test Naming Convention
 
@@ -377,3 +379,11 @@ Both `TestAcc*` and `TestLive*` use `resource.Test`, which requires `TF_ACC=1` t
 | `framework/acctests/index.mdx`                   | Acceptance testing overview     |
 | `framework/acctests/testing-patterns.mdx`        | Common testing patterns         |
 | `framework/acctests/plan-checks.mdx`             | Plan check functions             |
+
+## Testing `slack_app`
+
+- `apps.manifest.*` on the fake requires `testConfigToken`, every other method requires `testToken`, so a resource that reaches for the wrong client fails with `invalid_auth`
+- `setupTestClient` sets both `testAPIClient.slack` and `testAPIClient.apps`. Set one to nil afterwards to test the `Missing Credentials` diagnostic, as `TestAccApp_MissingAppConfigurationToken` and `TestAccConversation_MissingBotToken` do
+- The fake's export adds `settings` defaults, so every `TestAccApp_*` step also proves the drift compare keeps a plan empty; `TestAccApp_DriftIsDetected` edits the stored manifest to prove a real change still plans an update
+- A manifest without `display_information.name` returns `invalid_manifest` with a `pointer`/`message` entry, which `TestAccApp_InvalidManifest` matches in the diagnostic
+- Import steps ignore `manifest` (the export holds Slack's defaults) and the credentials (Slack returns them only on create)

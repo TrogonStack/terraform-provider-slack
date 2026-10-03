@@ -113,6 +113,7 @@ func (r *conversationResource) Configure(_ context.Context, req resource.Configu
 		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *apiClient, got: %T", req.ProviderData))
 		return
 	}
+	client.requireBotToken(&resp.Diagnostics, "slack_conversation")
 	r.client = client
 }
 

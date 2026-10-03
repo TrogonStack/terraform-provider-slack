@@ -29,19 +29,21 @@ description: >
 
 - **Package**: `internal/provider` (single flat package, all resources here)
 - **File naming**: `resource_<name>.go`, `resource_<name>_test.go`, `data_source_<name>.go`
-- **Provider client**: `*apiClient` wraps `*slack.Client` (`github.com/slack-go/slack`), built with the retrying HTTP client from `retry.go`
+- **Provider client**: `*apiClient` holds `slack` (`*slack.Client` from `github.com/slack-go/slack`) and `apps` (`*appsClient` in `apps_client.go`, raw-JSON `apps.manifest.*`), both on the retrying HTTP client from `retry.go`. Either is nil when its token is unset
+- **Credential check**: each resource's Configure calls `client.requireBotToken(...)` or `client.requireAppConfigurationToken(...)` before keeping the client
 - **Client injection**: Configure method casts `req.ProviderData.(*apiClient)`
 - **ID helper**: `rsId()` returns a Computed StringAttribute with `UseStateForUnknown`
-- **Simple import**: `resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)` (used by `slack_conversation` and `slack_usergroup`)
+- **Simple import**: `resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)` (used by every resource)
 - **Registration**: add the constructor to `Resources()` in `provider.go`; `DataSources()` is currently empty
 - **Error handling**: Slack reports a failure as HTTP 200 with `"ok": false` and an error code, which `slack-go` returns as a `slack.SlackErrorResponse`. Match codes with `hasSlackError(err, codes...)` and `isNotFound(err)` in `errors.go`, which unwrap with `errors.As` (a wrapped error would fail a direct type assertion, and `err.Error()` strings are not a contract)
   - **Read**: call `resp.State.RemoveResource(ctx)` and return (resource was deleted externally)
   - **Delete**: return without error (idempotent)
 - **No get-by-ID for user groups**: Slack has no `usergroups.info`. `findUsergroup` lists with `include_disabled` and `include_users` and filters by ID; a non-zero `DateDelete` means the group is disabled and counts as gone
-- **Destroy semantics**: Slack cannot delete channels or user groups. Delete archives a `slack_conversation` and disables a `slack_usergroup`
+- **Destroy semantics**: Slack cannot delete channels or user groups. Delete archives a `slack_conversation` and disables a `slack_usergroup`. `slack_app` Delete really deletes, and ignores `app_not_found` and `invalid_app_id`
+- **App manifests**: `manifest` is `jsontypes.Normalized`. Create and Update call `apps.manifest.validate` first and report `describeSlackError(err)`, which lists Slack's `pointer: message` entries. Read keeps the state manifest while `manifestCovers` finds every configured value in the export, which adds defaults. Credentials come only from create and use `UseStateForUnknown`
 - **Context**: always call the `...Context` variant of a `slack-go` method with the CRUD method's `ctx`
 - **Retry**: `retry.go` wraps the client's HTTP transport with automatic retry on 429 and 5xx except 501, honoring `Retry-After`. No configuration attribute
-- **Testing**: `fakeSlack` in `fake_slack_test.go` is an `http.Handler` that serves the `conversations.*` and `usergroups.*` methods with Slack's own error codes; `setupTestServer` + `setupTestClient` wire it up, no real API calls. `live_test.go` holds `TestLive_*` against a real workspace, skipped unless `TF_ACC` and `SLACK_TOKEN` are set
+- **Testing**: `fakeSlack` in `fake_slack_test.go` is an `http.Handler` that serves the `apps.manifest.*`, `conversations.*` and `usergroups.*` methods with Slack's own error codes (`apps.manifest.*` needs `testConfigToken`); `setupTestServer` + `setupTestClient` wire it up, no real API calls. `live_test.go` holds `TestLive_*` against a real workspace, skipped unless `TF_ACC` and the needed token (`SLACK_TOKEN` or `SLACK_APP_CONFIGURATION_TOKEN`) are set
 
 ---
 
