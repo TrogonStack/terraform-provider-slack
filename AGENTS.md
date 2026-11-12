@@ -44,7 +44,7 @@ Always load `terraform-provider-dev` when working on a resource or data source.
 
 ### Resource naming
 
-Use the same terminology as the Slack Web API. `slack_app` maps to `apps.manifest.*`, `slack_conversation` maps to `conversations.*` and `slack.Channel`, `slack_usergroup` maps to `usergroups.*` and `slack.UserGroup`. Never abbreviate to jargon that doesn't appear in the API surface.
+Use the same terminology as the Slack Web API. `slack_app` maps to `apps.manifest.*`, `slack_app_icon` maps to `apps.icon.set`, `slack_conversation` maps to `conversations.*` and `slack.Channel`, `slack_usergroup` maps to `usergroups.*` and `slack.UserGroup`. Never abbreviate to jargon that doesn't appear in the API surface.
 
 ### Not-found handling
 
@@ -65,6 +65,7 @@ Slack has no `usergroups.info`, so `findUsergroup` lists with `include_disabled`
 
 Slack has no API to delete a channel or a user group:
 
+- `slack_app_icon` Read keeps state and Delete only removes state, because Slack has no method that reads or removes an icon
 - `slack_app` Delete deletes the app with `apps.manifest.delete`, the only resource Slack can delete
 - `slack_conversation` Delete archives the channel and ignores `already_archived`
 - `slack_usergroup` Delete disables the group and skips a group that is missing or already disabled

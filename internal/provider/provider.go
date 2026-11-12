@@ -130,6 +130,7 @@ func (p *slackProvider) Configure(ctx context.Context, req provider.ConfigureReq
 func (p *slackProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		newApp,
+		newAppIcon,
 		newConversation,
 		newUsergroup,
 	}
