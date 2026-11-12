@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/TrogonStack/terraform-provider-slack/compare/v0.1.0...v0.2.0) (2026-11-12)
+
+
+### Features
+
+* **app_icon:** set a Slack app icon with apps.icon.set ([#9](https://github.com/TrogonStack/terraform-provider-slack/issues/9)) ([0d17a7b](https://github.com/TrogonStack/terraform-provider-slack/commit/0d17a7bdc93ca4ec45c879f907ad62818320ed15))
+
 ## 0.1.0 (2026-10-03)
 
 
