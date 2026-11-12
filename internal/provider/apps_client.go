@@ -1,12 +1,15 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"mime/multipart"
 
 	"github.com/slack-go/slack"
 )
@@ -89,7 +92,41 @@ func (c *appsClient) call(ctx context.Context, method string, values url.Values,
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return c.send(req, method, out)
+}
 
+func (c *appsClient) setIconFromFile(ctx context.Context, appID, filename string, content []byte) error {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("token", c.token); err != nil {
+		return err
+	}
+	if err := writer.WriteField("app_id", appID); err != nil {
+		return err
+	}
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(content); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL+"apps.icon.set", bytes.NewReader(body.Bytes()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	return c.send(req, "apps.icon.set", nil)
+}
+
+func (c *appsClient) setIconFromURL(ctx context.Context, appID, iconURL string) error {
+	return c.call(ctx, "apps.icon.set", url.Values{"app_id": {appID}, "url": {iconURL}}, nil)
+}
+
+func (c *appsClient) send(req *http.Request, method string, out any) error {
 	httpResp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err

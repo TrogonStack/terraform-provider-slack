@@ -3,6 +3,7 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -25,6 +26,13 @@ type fakeSlack struct {
 	usergroups    map[string]*slack.UserGroup
 	nextAppID     int
 	apps          map[string]map[string]any
+	icons         map[string][]fakeIcon
+}
+
+type fakeIcon struct {
+	Filename string
+	Content  []byte
+	URL      string
 }
 
 func newFakeSlack() *fakeSlack {
@@ -32,17 +40,23 @@ func newFakeSlack() *fakeSlack {
 		conversations: make(map[string]*slack.Channel),
 		usergroups:    make(map[string]*slack.UserGroup),
 		apps:          make(map[string]map[string]any),
+		icons:         make(map[string][]fakeIcon),
 	}
 }
 
 func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			writeSlackError(w, "invalid_form_data")
+			return
+		}
+	} else if err := r.ParseForm(); err != nil {
 		writeSlackError(w, "invalid_form_data")
 		return
 	}
 	method := strings.TrimPrefix(r.URL.Path, "/")
 	wantToken := testToken
-	if strings.HasPrefix(method, "apps.manifest.") {
+	if strings.HasPrefix(method, "apps.manifest.") || method == "apps.icon.set" {
 		wantToken = testConfigToken
 	}
 	if r.PostForm.Get("token") != wantToken {
@@ -99,6 +113,31 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "apps.manifest.delete":
 		f.withApp(w, form, func(id string) {
 			delete(f.apps, id)
+			writeSlackOK(w, nil)
+		})
+	case "apps.icon.set":
+		if _, ok := f.apps[form.Get("app_id")]; !ok {
+			writeSlackError(w, "invalid_app")
+			return
+		}
+		f.withApp(w, form, func(id string) {
+			icon := fakeIcon{URL: form.Get("url")}
+			if headers := r.MultipartForm; headers != nil && len(headers.File["file"]) > 0 {
+				header := headers.File["file"][0]
+				file, err := header.Open()
+				if err != nil {
+					writeSlackError(w, "invalid_form_data")
+					return
+				}
+				defer func() { _ = file.Close() }()
+				icon.Filename = header.Filename
+				icon.Content, _ = io.ReadAll(file)
+			}
+			if icon.URL == "" && icon.Content == nil {
+				writeSlackError(w, "invalid_arguments")
+				return
+			}
+			f.icons[id] = append(f.icons[id], icon)
 			writeSlackOK(w, nil)
 		})
 	case "conversations.create":

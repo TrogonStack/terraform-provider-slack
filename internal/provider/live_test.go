@@ -1,9 +1,13 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
@@ -208,6 +212,45 @@ resource "slack_app" "test" {
 			{
 				Config: config("Updated by the terraform-provider-slack live tests"),
 				Check:  resource.TestCheckResourceAttrSet("slack_app.test", "client_secret"),
+			},
+		},
+	})
+}
+
+// TestLive_AppIcon needs SLACK_LIVE_ICON_APP_ID, an app the token may change.
+// Slack cannot read or remove an icon, so the test only proves the upload.
+func TestLive_AppIcon(t *testing.T) {
+	requireLiveAppCredentials(t)
+	appID := os.Getenv("SLACK_LIVE_ICON_APP_ID")
+	if appID == "" {
+		t.Skip("set SLACK_LIVE_ICON_APP_ID to an app ID whose icon the live test may replace")
+	}
+
+	icon := filepath.Join(t.TempDir(), "icon.png")
+	img := image.NewGray(image.Rect(0, 0, 512, 512))
+	for i := range img.Pix {
+		img.Pix[i] = 128
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(icon, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: liveProviderConfig + fmt.Sprintf(`
+resource "slack_app_icon" "test" {
+  app_id = %q
+  file   = %q
+  sha256 = filesha256(%q)
+}
+`, appID, icon, icon),
+				Check: resource.TestCheckResourceAttr("slack_app_icon.test", "id", appID),
 			},
 		},
 	})

@@ -60,6 +60,7 @@ The admin installs again only when the manifest changes the bot scopes. Any othe
 | Type                 | API                 | Credential                |
 | -------------------- | ------------------- | ------------------------- |
 | `slack_app`          | `apps.manifest.*`   | `app_configuration_token` |
+| `slack_app_icon`     | `apps.icon.set`     | `app_configuration_token` |
 | `slack_conversation` | `conversations.*`   | `token`                   |
 | `slack_usergroup`    | `usergroups.*`      | `token`                   |
 
@@ -115,6 +116,8 @@ resource "slack_usergroup" "platform" {
 ```
 
 Destroying `slack_app` deletes the app. Slack returns the app's credentials only when the app is created, so `client_secret`, `signing_secret` and the other credentials stay unknown for an imported app.
+
+Slack has no API to read or remove an app icon. `slack_app_icon` uploads the icon on create and whenever `sha256` or `url` changes, cannot detect an icon changed in Slack, and destroying it only removes it from state.
 
 Slack has no API to delete a channel or a user group, so destroying `slack_conversation` archives the channel and destroying `slack_usergroup` disables the group. Creating a user group whose name or handle matches a disabled group re-enables that group instead of failing.
 
