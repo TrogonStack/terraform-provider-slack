@@ -116,6 +116,10 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeSlackOK(w, nil)
 		})
 	case "apps.icon.set":
+		if _, ok := f.apps[form.Get("app_id")]; !ok {
+			writeSlackError(w, "invalid_app")
+			return
+		}
 		f.withApp(w, form, func(id string) {
 			icon := fakeIcon{URL: form.Get("url")}
 			if headers := r.MultipartForm; headers != nil && len(headers.File["file"]) > 0 {

@@ -82,7 +82,7 @@ Slack has no API to delete a channel or a user group:
 
 Tests use an in-memory fake of the Slack Web API, never real API calls:
 
-- `fake_slack_test.go`: `fakeSlack` is an `http.Handler` serving the `apps.manifest.*`, `conversations.*` and `usergroups.*` methods the provider calls, backed by mutex-guarded maps and returning Slack's own error codes; `apps.manifest.*` requires `testConfigToken`, every other method requires `testToken`, and an unknown method returns an error. Its export adds defaults, so tests exercise the drift compare
+- `fake_slack_test.go`: `fakeSlack` is an `http.Handler` serving the `apps.manifest.*`, `conversations.*` and `usergroups.*` methods the provider calls, backed by mutex-guarded maps and returning Slack's own error codes; `apps.manifest.*` and `apps.icon.set` require `testConfigToken`, every other method requires `testToken`, and an unknown method returns an error. Its export adds defaults, so tests exercise the drift compare
 - `setupTestServer()`: serves the fake from an `httptest.Server`
 - `setupTestClient()`: points a real `slack.Client` (via `slack.OptionAPIURL`) and an `appsClient` at that server and injects them as `testAPIClient`, bypassing provider configuration entirely. Set either field to nil after it to test the missing-credential diagnostics
 - `live_test.go`: `TestLive_*` run against a real workspace, skipped unless `TF_ACC` and the token the resource needs (`SLACK_TOKEN` or `SLACK_APP_CONFIGURATION_TOKEN`) are set; `mise run test` skips them

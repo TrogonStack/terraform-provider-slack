@@ -22,7 +22,12 @@ const testIconAppID = "A0000000001"
 
 func writeTestIcon(t *testing.T, name string, pixels int, shade uint8) string {
 	t.Helper()
-	img := image.NewGray(image.Rect(0, 0, pixels, pixels))
+	return writeTestImage(t, name, pixels, pixels, shade)
+}
+
+func writeTestImage(t *testing.T, name string, width, height int, shade uint8) string {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, width, height))
 	for i := range img.Pix {
 		img.Pix[i] = shade
 	}
@@ -186,7 +191,7 @@ func TestAccAppIcon_AppNotFound(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				Config:      appIconFileConfig(testIconAppID, icon),
-				ExpectError: regexp.MustCompile(`Unable to set app icon: app_not_found`),
+				ExpectError: regexp.MustCompile(`Unable to set app icon: invalid_app`),
 			},
 		},
 	})
@@ -196,6 +201,8 @@ func TestAccAppIcon_Validation(t *testing.T) {
 	setupTestClient(t, setupTestServer(t, fakeWithApp()))
 	small := writeTestIcon(t, "small.png", 256, 10)
 	large := writeTestIcon(t, "large.png", 2001, 10)
+	wide := writeTestImage(t, "wide.png", 1024, 512, 10)
+	icon := writeTestIcon(t, "icon.png", 512, 10)
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
@@ -207,6 +214,20 @@ func TestAccAppIcon_Validation(t *testing.T) {
 			{
 				Config:      appIconFileConfig(testIconAppID, large),
 				ExpectError: regexp.MustCompile(`2001x2001 pixels, but Slack needs 512 to 2000`),
+			},
+			{
+				Config:      appIconFileConfig(testIconAppID, wide),
+				ExpectError: regexp.MustCompile(`1024x512 pixels, but Slack needs a square image`),
+			},
+			{
+				Config: testProviderConfig + fmt.Sprintf(`
+resource "slack_app_icon" "test" {
+  app_id = %q
+  file   = %q
+  sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+}
+`, testIconAppID, icon),
+				ExpectError: regexp.MustCompile(`(?s)the file changed after the plan`),
 			},
 			{
 				Config: testProviderConfig + `

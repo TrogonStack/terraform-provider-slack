@@ -3,6 +3,8 @@ package provider
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -10,6 +12,7 @@ import (
 	_ "image/png"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -133,6 +136,9 @@ func checkAppIconDimensions(content []byte) error {
 	if size.Width < minAppIconPixels || size.Height < minAppIconPixels || size.Width > maxAppIconPixels || size.Height > maxAppIconPixels {
 		return fmt.Errorf("the image is %dx%d pixels, but Slack needs %d to %d pixels on each side", size.Width, size.Height, minAppIconPixels, maxAppIconPixels)
 	}
+	if size.Width != size.Height {
+		return fmt.Errorf("the image is %dx%d pixels, but Slack needs a square image", size.Width, size.Height)
+	}
 	return nil
 }
 
@@ -144,6 +150,10 @@ func (r *appIconResource) apply(ctx context.Context, plan *appIconResourceModel)
 	content, err := os.ReadFile(plan.File.ValueString())
 	if err != nil {
 		return fmt.Errorf("reading the icon file: %w", err)
+	}
+	sum := sha256.Sum256(content)
+	if actual := hex.EncodeToString(sum[:]); !strings.EqualFold(actual, plan.Sha256.ValueString()) {
+		return fmt.Errorf("the file has sha256 %s, but the plan has %s; the file changed after the plan, so plan again", actual, plan.Sha256.ValueString())
 	}
 	if err := checkAppIconDimensions(content); err != nil {
 		return err
